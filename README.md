@@ -41,10 +41,13 @@ MentraOS install links: [mentra.glass/install](https://mentra.glass/install)
 5. Set up your environment variables:
    * Create a `.env` file in the root directory by copying the example: `cp .env.example .env`
    * Edit the `.env` file with your app details:
-     ```
+    ```
      PORT=3000
      PACKAGE_NAME=com.yourName.yourAppName
      MENTRAOS_API_KEY=your_api_key_from_console
+     SEENIQ_API_BASE_URL=http://localhost:3000/api
+     SEENIQ_API_KEY=your_seeniq_api_key
+     SEENIQ_PERSONA_VERSION_ID=43
      ```
    * Make sure the `PACKAGE_NAME` matches what you registered in the MentraOS Console
    * Get your `API_KEY` from the MentraOS Developer Console

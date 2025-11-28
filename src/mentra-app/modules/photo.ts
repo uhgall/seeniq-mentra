@@ -10,7 +10,15 @@
  */
 
 import { AppSession } from '@mentra/sdk';
-import { broadcastPhotoToClients } from '../routes/routes';
+import { broadcastPhotoToClients, broadcastTranscriptionToClients } from '../routes/routes';
+
+const SEENIQ_API_BASE_URL =
+  process.env.SEENIQ_API_BASE_URL ?? 'http://localhost:3000/api';
+
+const SEENIQ_API_KEY = process.env.SEENIQ_API_KEY;
+
+const SEENIQ_PERSONA_VERSION_ID =
+  process.env.SEENIQ_PERSONA_VERSION_ID ?? '43';
 
 interface StoredPhoto {
   requestId: string;
@@ -55,6 +63,11 @@ export async function takePhoto(
 
     // Console log the base64 image
     const base64Data = photo.buffer.toString('base64');
+    await sendPhotoToSeeniq({
+      base64Photo: base64Data,
+      userId,
+      logger,
+    });
     console.log('\n========================================');
     console.log('📸 BASE64 IMAGE DATA');
     console.log('========================================');
@@ -73,4 +86,104 @@ export async function takePhoto(
   } catch (error) {
     logger.error(`Error taking photo: ${error}`);
   }
+}
+
+interface SendPhotoParams {
+  base64Photo: string;
+  userId: string;
+  logger: any;
+}
+
+async function sendPhotoToSeeniq({
+  base64Photo,
+  userId,
+  logger,
+}: SendPhotoParams): Promise<void> {
+  if (!SEENIQ_API_KEY) {
+    logger.warn('SEENIQ_API_KEY is not set. Skipping Seeniq upload.');
+    return;
+  }
+
+  if (!base64Photo) {
+    logger.warn('Empty photo provided to Seeniq upload.');
+    return;
+  }
+
+  const url = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/discoveries/create_and_send_explanation_text`;
+
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SEENIQ_API_KEY}`,
+      },
+      body: JSON.stringify({
+        photo: base64Photo,
+        persona_version_id: Number(SEENIQ_PERSONA_VERSION_ID) || 43,
+      }),
+    });
+
+    const contentType = response.headers.get('content-type') ?? '';
+    const payload = contentType.includes('application/json')
+      ? await response.json()
+      : await response.text();
+
+    if (!response.ok) {
+      logger.error(
+        `Seeniq API request failed (${response.status}): ${
+          typeof payload === 'string' ? payload : JSON.stringify(payload)
+        }`,
+      );
+      return;
+    }
+
+    const explanation = extractExplanationText(payload);
+
+    if (explanation) {
+      const message = `Seeniq explanation: ${explanation}`;
+      logger.info(message);
+      broadcastTranscriptionToClients(message, true, userId);
+    } else {
+      logger.warn(
+        `Seeniq API response did not include recognizable explanation text: ${
+          typeof payload === 'string' ? payload : JSON.stringify(payload)
+        }`,
+      );
+    }
+  } catch (error: any) {
+    logger.error(`Error calling Seeniq API: ${error?.message ?? error}`);
+  }
+}
+
+function extractExplanationText(payload: any): string | null {
+  if (!payload) {
+    return null;
+  }
+
+  if (typeof payload === 'string') {
+    return payload.trim() || null;
+  }
+
+  const candidateKeys = [
+    'explanation',
+    'explanation_text',
+    'explanationText',
+    'text',
+    'message',
+    'summary',
+  ];
+
+  for (const key of candidateKeys) {
+    const value = payload?.[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  if (typeof payload?.data === 'object' && payload.data) {
+    return extractExplanationText(payload.data);
+  }
+
+  return null;
 }
