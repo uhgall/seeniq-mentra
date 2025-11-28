@@ -125,6 +125,26 @@ export async function sendPhotoToSeeniq({
 
   const url = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/discoveries/create_and_send_explanation_text`;
 
+  // Test GET request to persona_versions endpoint
+  try {
+    const personaVersionsUrl = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/persona_versions`;
+    const personaVersionsResponse = await fetch(personaVersionsUrl, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${SEENIQ_API_KEY}`,
+      },
+    });
+
+    const personaVersionsData = personaVersionsResponse.ok
+      ? await personaVersionsResponse.json()
+      : { error: `Failed with status ${personaVersionsResponse.status}`, text: await personaVersionsResponse.text() };
+    
+    console.log('SEENIQRESULTS', personaVersionsData);
+  } catch (error: any) {
+    console.log('SEENIQRESULTS', { error: error?.message ?? error });
+  }
+
   try {
     const response = await fetch(url, {
       method: 'POST',
