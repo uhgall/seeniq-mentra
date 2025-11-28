@@ -1,0 +1,113 @@
+@import "tailwindcss";
+
+/* Dark Mode Theme */
+.dark {
+  /* Background colors */
+  --bg-primary: #000000;
+  --bg-secondary: #001006;
+  --bg-tertiary: #000000;
+  --bg-card: rgba(15, 23, 42, 0.3);
+  --bg-card-hover: rgba(30, 41, 59, 0.5);
+  --bg-input: rgba(30, 41, 59, 0.5);
+
+  /* Text colors */
+  --text-primary: #d8d8d8;
+  --text-secondary: #94a3b8;
+  --text-tertiary: #64748b;
+  --text-muted: #475569;
+
+  /* Accent colors */
+  --accent-emerald: #34d399;
+  --accent-emerald-muted: rgba(52, 211, 153, 0.7);
+  --accent-cyan: #22d3ee;
+  --accent-rose: #fb7185;
+  --accent-purple: #a78bfa;
+  --accent-orange: #fb923c;
+  --accent-amber: #fbbf24;
+
+  /* Border colors */
+  --border-primary: rgba(71, 85, 105, 0.5);
+  --border-secondary: rgba(30, 41, 59, 0.5);
+
+  /* Icon background colors */
+  --icon-bg-cyan: rgba(34, 211, 238, 0.2);
+  --icon-bg-rose: rgba(251, 113, 133, 0.2);
+  --icon-bg-purple: rgba(167, 139, 250, 0.2);
+  --icon-bg-orange: rgba(251, 146, 60, 0.2);
+
+  /* Grid overlay */
+  --grid-color: rgba(10, 80, 50, 1);
+
+  /* Shadow colors */
+  --shadow-sm: rgba(0, 0, 0, 0.1);
+  --shadow-md: rgba(0, 0, 0, 0.2);
+}
+
+/* Light Mode Theme */
+.light {
+  /* Background colors */
+  --bg-primary: #caffbd84;
+  --bg-secondary: #fef9f5;
+  --bg-tertiary: #caffbd32;
+  --bg-card: rgba(255, 255, 255, 0.8);
+  --bg-card-hover: rgba(248, 250, 252, 0.9);
+  --bg-input: rgba(248, 250, 252, 0.8);
+
+  /* Text colors */
+  --text-primary: #64748b;
+  --text-secondary: #475569;
+  --text-tertiary: #64748b;
+  --text-muted: #94a3b8;
+
+  /* Accent colors */
+  --accent-emerald: #10b981;
+  --accent-emerald-muted: rgba(16, 185, 129, 0.7);
+  --accent-cyan: #06b6d4;
+  --accent-rose: #f43f5e;
+  --accent-purple: #8b5cf6;
+  --accent-orange: #f97316;
+  --accent-amber: #f59e0b;
+
+  /* Border colors */
+  --border-primary: rgba(226, 232, 240, 0.8);
+  --border-secondary: rgba(203, 213, 225, 0.8);
+
+  /* Icon background colors */
+  --icon-bg-cyan: rgba(6, 182, 212, 0.15);
+  --icon-bg-rose: rgba(244, 63, 94, 0.15);
+  --icon-bg-purple: rgba(139, 92, 246, 0.15);
+  --icon-bg-orange: rgba(249, 115, 22, 0.15);
+
+  /* Grid overlay */
+  --grid-color: rgba(0, 0, 0, 0.385);
+
+  /* Shadow colors */
+  --shadow-sm: rgba(0, 0, 0, 0.05);
+  --shadow-md: rgba(0, 0, 0, 0.1);
+}
+
+@keyframes spin-slow {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin-slow {
+  animation: spin-slow 20s linear infinite;
+}
+
+@keyframes grid-pulse {
+  0%, 100% {
+    opacity: 0.02;
+  }
+  50% {
+    opacity: 0.08;
+  }
+}
+
+.animate-grid-pulse {
+  animation: grid-pulse 4s ease-in-out infinite;
+}
