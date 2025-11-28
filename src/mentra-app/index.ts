@@ -20,11 +20,12 @@
 
 import { AppServer, AppSession } from "@mentra/sdk";
 import { setupButtonHandler } from "./event/button";
-import { takePhoto } from "./modules/photo";
+import { takePhoto, addLocationToExif, sendPhotoToSeeniq } from "./modules/photo";
 import { setupWebviewRoutes, broadcastTranscriptionToClients, registerSession, unregisterSession } from "./routes/routes";
 import { playAudio, speak } from "./modules/audio";
 import { setupTranscription } from "./modules/transcription";
 import * as path from "path";
+import { getLocation } from "./modules/location";
 
 interface StoredPhoto {
   requestId: string;
@@ -160,9 +161,58 @@ class ExampleMentraOSApp extends AppServer {
     });
 
     // Listen for button presses on the glasses
-    setupButtonHandler(session, userId, this.logger, async (s, u) =>
-      takePhoto(s, u, this.logger, this.photosMap)
-    );
+    setupButtonHandler(session, userId, this.logger, async (s, u) => {
+      const photoResult = await takePhoto(s, u, this.logger, this.photosMap);
+      if (photoResult) {
+        console.log('Photo taken successfully');
+      }
+
+
+      const locationResult = await getLocation(s, u, this.logger);
+      if (locationResult) {
+        console.log('Location result:', locationResult);
+      }
+
+      if (photoResult && locationResult) {
+        // Add location to EXIF data
+        const exifResult = addLocationToExif(
+          photoResult.buffer,
+          locationResult,
+          this.logger
+        );
+
+        if (exifResult) {
+          // Update the stored photo with the new buffer containing EXIF data
+          const storedPhoto = this.photosMap.get(photoResult.requestId);
+          if (storedPhoto) {
+            storedPhoto.buffer = exifResult.buffer;
+            storedPhoto.size = exifResult.buffer.length;
+            this.photosMap.set(photoResult.requestId, storedPhoto);
+            this.logger.info(`Updated photo ${photoResult.requestId} with location EXIF data`);
+          }
+
+          // Send photo with EXIF location data to Seeniq
+          const seeniqResult = await sendPhotoToSeeniq({
+            base64Photo: exifResult.base64Data,
+            userId: userId,
+            logger: this.logger,
+          });
+
+          if (seeniqResult) {
+            await session.audio.speak(seeniqResult);
+          }
+
+        } else {
+          this.logger.warn('Failed to add location to EXIF, but photo and location were captured');
+          // Send original photo without EXIF location data
+          await sendPhotoToSeeniq({
+            base64Photo: photoResult.base64Data,
+            userId: userId,
+            logger: this.logger,
+          });
+        }
+      }
+    });
   }
 
   /**

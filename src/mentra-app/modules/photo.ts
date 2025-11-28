@@ -11,6 +11,7 @@
 
 import { AppSession } from '@mentra/sdk';
 import { broadcastPhotoToClients, broadcastTranscriptionToClients } from '../routes/routes';
+import piexif from 'piexifjs';
 
 const SEENIQ_API_BASE_URL =
   process.env.SEENIQ_API_BASE_URL ?? 'http://localhost:3000/api';
@@ -18,7 +19,7 @@ const SEENIQ_API_BASE_URL =
 const SEENIQ_API_KEY = process.env.SEENIQ_API_KEY;
 
 const SEENIQ_PERSONA_VERSION_ID =
-  process.env.SEENIQ_PERSONA_VERSION_ID ?? '43';
+  process.env.SEENIQ_PERSONA_VERSION_ID;
 
 interface StoredPhoto {
   requestId: string;
@@ -36,6 +37,17 @@ interface StoredPhoto {
 interface TakePhotoResult {
   base64Data: string;
   mimeType: string;
+  buffer: Buffer;
+  requestId: string;
+}
+
+interface LocationUpdate {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+  altitude?: number;
+  timestamp: Date;
+  correlationId?: string;
 }
 
 export async function takePhoto(
@@ -91,6 +103,8 @@ export async function takePhoto(
     return {
       base64Data,
       mimeType: photo.mimeType,
+      buffer: photo.buffer,
+      requestId: photo.requestId,
     };
 
   } catch (error) {
@@ -108,20 +122,18 @@ export async function sendPhotoToSeeniq({
   base64Photo,
   userId,
   logger,
-}: SendPhotoParams): Promise<void> {
+}: SendPhotoParams): Promise<string | null | undefined> {
   if (!SEENIQ_API_KEY) {
     logger.warn('SEENIQ_API_KEY is not set. Skipping Seeniq upload.');
-    return;
+    return null;
   }
 
   if (!base64Photo) {
     logger.warn('Empty photo provided to Seeniq upload.');
-    return;
+    return null;
   }
 
-
-
-  
+  logger.info(`Sending photo to Seeniq for user ${userId} (photo size: ${base64Photo.length} base64 chars)`);
 
   const url = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/discoveries/create_and_send_explanation_text`;
 
@@ -154,7 +166,7 @@ export async function sendPhotoToSeeniq({
       },
       body: JSON.stringify({
         photo: base64Photo,
-        persona_version_id: Number(SEENIQ_PERSONA_VERSION_ID) || 43,
+        persona_version_id: Number(SEENIQ_PERSONA_VERSION_ID),
       }),
     });
 
@@ -169,7 +181,7 @@ export async function sendPhotoToSeeniq({
           typeof payload === 'string' ? payload : JSON.stringify(payload)
         }`,
       );
-      return;
+      return null;
     }
 
     const explanation = extractExplanationText(payload);
@@ -178,13 +190,10 @@ export async function sendPhotoToSeeniq({
       const message = `Seeniq explanation: ${explanation}`;
       logger.info(message);
       broadcastTranscriptionToClients(message, true, userId);
-    } else {
-      logger.warn(
-        `Seeniq API response did not include recognizable explanation text: ${
-          typeof payload === 'string' ? payload : JSON.stringify(payload)
-        }`,
-      );
-    }
+      return explanation;
+    } 
+
+    return null;
   } catch (error: any) {
     logger.error(`Error calling Seeniq API: ${error?.message ?? error}`);
   }
@@ -220,4 +229,85 @@ function extractExplanationText(payload: any): string | null {
   }
 
   return null;
+}
+
+/**
+ * Add GPS location data to photo EXIF
+ */
+export function addLocationToExif(
+  photoBuffer: Buffer,
+  location: LocationUpdate,
+  logger: any
+): { buffer: Buffer; base64Data: string } | null {
+  try {
+    // Convert buffer to base64 data URL format
+    const base64Image = photoBuffer.toString('base64');
+    const dataUrl = `data:image/jpeg;base64,${base64Image}`;
+
+    // Load existing EXIF or create new
+    let exifObj: any;
+    try {
+      exifObj = piexif.load(dataUrl);
+    } catch (error) {
+      // If no EXIF exists, create a new object
+      exifObj = { '0th': {}, 'Exif': {}, 'GPS': {}, '1st': {}, 'thumbnail': null };
+    }
+
+    // Set GPS latitude
+    const latRef = location.latitude >= 0 ? 'N' : 'S';
+    const latDeg = Math.floor(Math.abs(location.latitude));
+    const latMin = Math.floor((Math.abs(location.latitude) - latDeg) * 60);
+    const latSec = (Math.abs(location.latitude) - latDeg - latMin / 60) * 3600;
+    exifObj['GPS'][piexif.GPSIFD.GPSLatitude] = [
+      [latDeg, 1],
+      [latMin, 1],
+      [Math.floor(latSec * 100), 100]
+    ];
+    exifObj['GPS'][piexif.GPSIFD.GPSLatitudeRef] = latRef;
+
+    // Set GPS longitude
+    const lonRef = location.longitude >= 0 ? 'E' : 'W';
+    const lonDeg = Math.floor(Math.abs(location.longitude));
+    const lonMin = Math.floor((Math.abs(location.longitude) - lonDeg) * 60);
+    const lonSec = (Math.abs(location.longitude) - lonDeg - lonMin / 60) * 3600;
+    exifObj['GPS'][piexif.GPSIFD.GPSLongitude] = [
+      [lonDeg, 1],
+      [lonMin, 1],
+      [Math.floor(lonSec * 100), 100]
+    ];
+    exifObj['GPS'][piexif.GPSIFD.GPSLongitudeRef] = lonRef;
+
+    // Set altitude if available (stored as rational number in meters)
+    if (location.altitude !== undefined) {
+      // Convert to rational number with 2 decimal precision
+      const altitudeMeters = Math.abs(location.altitude);
+      exifObj['GPS'][piexif.GPSIFD.GPSAltitude] = [Math.round(altitudeMeters * 100), 100];
+      exifObj['GPS'][piexif.GPSIFD.GPSAltitudeRef] = location.altitude >= 0 ? 0 : 1;
+    }
+
+    // Convert EXIF object to string
+    const exifStr = piexif.dump(exifObj);
+
+    // Insert EXIF into image
+    const newDataUrl = piexif.insert(exifStr, dataUrl);
+
+    // Extract base64 data from data URL
+    const base64Match = newDataUrl.match(/base64,(.+)$/);
+    if (!base64Match) {
+      logger.error('Failed to extract base64 data from EXIF-modified image');
+      return null;
+    }
+
+    const newBase64Data = base64Match[1];
+    const newBuffer = Buffer.from(newBase64Data, 'base64');
+
+    logger.info(`Location added to EXIF: ${location.latitude}, ${location.longitude}`);
+    return {
+      buffer: newBuffer,
+      base64Data: newBase64Data,
+    };
+  } catch (error: any) {
+    logger.error(`Error adding location to EXIF: ${error?.message ?? error}`);
+    return null;
+  }
 }
