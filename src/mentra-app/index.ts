@@ -20,7 +20,7 @@
 
 import { AppServer, AppSession } from "@mentra/sdk";
 import { setupButtonHandler } from "./event/button";
-import { takePhoto } from "./modules/photo";
+import { takePhoto, sendPhotoToSeeniq } from "./modules/photo";
 import { setupWebviewRoutes, broadcastTranscriptionToClients, registerSession, unregisterSession } from "./routes/routes";
 import { playAudio, speak } from "./modules/audio";
 import { setupTranscription } from "./modules/transcription";
@@ -134,24 +134,24 @@ class ExampleMentraOSApp extends AppServer {
     // // await session.audio.speak('Hello from your app!');
 
     // Set up transcription to log all speech-to-text
-    setupTranscription(
-      session,
-      (finalText) => {
-        // Called when transcription is finalized
-        this.logger.info(`[FINAL] Transcription for user ${userId}: ${finalText}`);
-        console.log(`✅ Final transcription (user ${userId}): ${finalText}`);
+    // setupTranscription(
+    //   session,
+    //   (finalText) => {
+    //     // Called when transcription is finalized
+    //     this.logger.info(`[FINAL] Transcription for user ${userId}: ${finalText}`);
+    //     console.log(`✅ Final transcription (user ${userId}): ${finalText}`);
 
-        // Broadcast final transcription to this user's SSE clients only
-        broadcastTranscriptionToClients(finalText, true, userId);
-      },
-      (partialText) => {
-        // Called for interim/partial results (optional)
-        console.log(`⏳ Partial transcription (user ${userId}): ${partialText}`);
+    //     // Broadcast final transcription to this user's SSE clients only
+    //     broadcastTranscriptionToClients(finalText, true, userId);
+    //   },
+    //   (partialText) => {
+    //     // Called for interim/partial results (optional)
+    //     console.log(`⏳ Partial transcription (user ${userId}): ${partialText}`);
 
-        // Broadcast partial transcription to this user's SSE clients only
-        broadcastTranscriptionToClients(partialText, false, userId);
-      }
-    );
+    //     // Broadcast partial transcription to this user's SSE clients only
+    //     broadcastTranscriptionToClients(partialText, false, userId);
+    //   }
+    // );
 
     // Register handler for all touch events
     session.events.onTouchEvent((event) => {
@@ -159,9 +159,18 @@ class ExampleMentraOSApp extends AppServer {
     });
 
     // Listen for button presses on the glasses
-    setupButtonHandler(session, userId, this.logger, (s, u) =>
-      takePhoto(s, u, this.logger, this.photosMap)
-    );
+    setupButtonHandler(session, userId, this.logger, async (s, u) => {
+      const result = await takePhoto(s, u, this.logger, this.photosMap);
+
+
+      if (result) {
+        await sendPhotoToSeeniq({
+          base64Photo: result.base64Data,
+          userId: result.userId,
+          logger: result.logger,
+        });
+      }
+    });
   }
 
   /**

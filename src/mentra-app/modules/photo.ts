@@ -38,7 +38,7 @@ export async function takePhoto(
   userId: string,
   logger: any,
   photosMap: Map<string, StoredPhoto>
-): Promise<void> {
+): Promise<{ base64Data: string; userId: string; logger: any } | undefined> {
   try {
     const photo = await session.camera.requestPhoto();
     logger.info(`Photo taken for user ${userId}, timestamp: ${photo.timestamp}`);
@@ -61,13 +61,13 @@ export async function takePhoto(
     // Broadcast to all SSE clients
     broadcastPhotoToClients(storedPhoto);
 
+
+    
+
     // Console log the base64 image
     const base64Data = photo.buffer.toString('base64');
-    await sendPhotoToSeeniq({
-      base64Photo: base64Data,
-      userId,
-      logger,
-    });
+
+
     console.log('\n========================================');
     console.log('📸 BASE64 IMAGE DATA');
     console.log('========================================');
@@ -83,6 +83,8 @@ export async function takePhoto(
     console.log(base64Data);
     console.log('========================================\n');
 
+    return { base64Data, userId, logger };
+
   } catch (error) {
     logger.error(`Error taking photo: ${error}`);
   }
@@ -94,7 +96,7 @@ interface SendPhotoParams {
   logger: any;
 }
 
-async function sendPhotoToSeeniq({
+export async function sendPhotoToSeeniq({
   base64Photo,
   userId,
   logger,
