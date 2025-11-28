@@ -21,6 +21,7 @@
     "ejs": "^3.1.10",
     "express": "^4.21.2",
     "http-proxy-middleware": "^3.0.5",
+    "piexifjs": "^1.0.6",
     "ws": "^8.18.1"
   },
   "devDependencies": {

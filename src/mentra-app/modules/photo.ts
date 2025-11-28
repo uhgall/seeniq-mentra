@@ -33,12 +33,17 @@ interface StoredPhoto {
 /**
  * Take a photo and store it temporarily
  */
+interface TakePhotoResult {
+  base64Data: string;
+  mimeType: string;
+}
+
 export async function takePhoto(
   session: AppSession,
   userId: string,
   logger: any,
   photosMap: Map<string, StoredPhoto>
-): Promise<{ base64Data: string; userId: string; logger: any } | undefined> {
+): Promise<TakePhotoResult | undefined> {
   try {
     const photo = await session.camera.requestPhoto();
     logger.info(`Photo taken for user ${userId}, timestamp: ${photo.timestamp}`);
@@ -83,7 +88,10 @@ export async function takePhoto(
     console.log(base64Data);
     console.log('========================================\n');
 
-    return { base64Data, userId, logger };
+    return {
+      base64Data,
+      mimeType: photo.mimeType,
+    };
 
   } catch (error) {
     logger.error(`Error taking photo: ${error}`);
@@ -110,6 +118,10 @@ export async function sendPhotoToSeeniq({
     logger.warn('Empty photo provided to Seeniq upload.');
     return;
   }
+
+
+
+  
 
   const url = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/discoveries/create_and_send_explanation_text`;
 

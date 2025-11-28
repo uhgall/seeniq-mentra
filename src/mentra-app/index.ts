@@ -20,7 +20,7 @@
 
 import { AppServer, AppSession } from "@mentra/sdk";
 import { setupButtonHandler } from "./event/button";
-import { takePhoto, sendPhotoToSeeniq } from "./modules/photo";
+import { takePhoto } from "./modules/photo";
 import { setupWebviewRoutes, broadcastTranscriptionToClients, registerSession, unregisterSession } from "./routes/routes";
 import { playAudio, speak } from "./modules/audio";
 import { setupTranscription } from "./modules/transcription";
@@ -159,18 +159,9 @@ class ExampleMentraOSApp extends AppServer {
     });
 
     // Listen for button presses on the glasses
-    setupButtonHandler(session, userId, this.logger, async (s, u) => {
-      const result = await takePhoto(s, u, this.logger, this.photosMap);
-
-
-      if (result) {
-        await sendPhotoToSeeniq({
-          base64Photo: result.base64Data,
-          userId: result.userId,
-          logger: result.logger,
-        });
-      }
-    });
+    setupButtonHandler(session, userId, this.logger, async (s, u) =>
+      takePhoto(s, u, this.logger, this.photosMap)
+    );
   }
 
   /**
