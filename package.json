@@ -4,7 +4,7 @@
   "main": "index.js",
   "scripts": {
     "start": "bun src/mentra-app/index.ts",
-    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev": "node node_modules/concurrently/dist/bin/concurrently.js \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "bun --hot src/mentra-app/index.ts",
     "dev:frontend": "cd src/frontend && npm run dev",
     "build:frontend": "cd src/frontend && npm run build",

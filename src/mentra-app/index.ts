@@ -87,7 +87,8 @@ class ExampleMentraOSApp extends AppServer {
       this.getExpressApp().use('/webview', createProxyMiddleware({
         target: 'http://localhost:5173/webview',
         changeOrigin: true,
-        ws: true, // Enable WebSocket proxying for HMR
+        // Bun's HTTP server does not expose Node's upgrade handler; disable ws proxying to avoid runtime errors.
+        ws: false,
         pathRewrite: {
           '^/webview': '' // Remove /webview prefix when proxying
         },
