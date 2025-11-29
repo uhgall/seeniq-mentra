@@ -137,25 +137,28 @@ export async function sendPhotoToSeeniq({
 
   const url = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/discoveries/create_and_send_explanation_text`;
 
-  // Test GET request to persona_versions endpoint
-  try {
-    const personaVersionsUrl = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/persona_versions`;
-    const personaVersionsResponse = await fetch(personaVersionsUrl, {
-      method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${SEENIQ_API_KEY}`,
-      },
-    });
+  // Test GET request to persona_versions endpoint (non-blocking, runs in background)
+  // Don't await this - let it run in the background
+  (async () => {
+    try {
+      const personaVersionsUrl = `${SEENIQ_API_BASE_URL.replace(/\/$/, '')}/persona_versions`;
+      const personaVersionsResponse = await fetch(personaVersionsUrl, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${SEENIQ_API_KEY}`,
+        },
+      });
 
-    const personaVersionsData = personaVersionsResponse.ok
-      ? await personaVersionsResponse.json()
-      : { error: `Failed with status ${personaVersionsResponse.status}`, text: await personaVersionsResponse.text() };
-    
-    console.log('SEENIQRESULTS', personaVersionsData);
-  } catch (error: any) {
-    console.log('SEENIQRESULTS', { error: error?.message ?? error });
-  }
+      const personaVersionsData = personaVersionsResponse.ok
+        ? await personaVersionsResponse.json()
+        : { error: `Failed with status ${personaVersionsResponse.status}`, text: await personaVersionsResponse.text() };
+      
+      console.log('SEENIQRESULTS', personaVersionsData);
+    } catch (error: any) {
+      console.log('SEENIQRESULTS', { error: error?.message ?? error });
+    }
+  })();
 
   try {
     const response = await fetch(url, {
@@ -232,7 +235,29 @@ function extractExplanationText(payload: any): string | null {
 }
 
 /**
- * Add GPS location data to photo EXIF
+ * Add GPS location data to photo EXIF (async version for background processing)
+ */
+export async function addLocationToExifAsync(
+  photoBuffer: Buffer,
+  location: LocationUpdate,
+  logger: any
+): Promise<{ buffer: Buffer; base64Data: string } | null> {
+  // Run EXIF processing in a microtask to avoid blocking
+  return new Promise((resolve) => {
+    // Use setImmediate to make it truly async
+    setImmediate(() => {
+      try {
+        resolve(addLocationToExif(photoBuffer, location, logger));
+      } catch (error) {
+        logger.error(`Error in async EXIF processing: ${error}`);
+        resolve(null);
+      }
+    });
+  });
+}
+
+/**
+ * Add GPS location data to photo EXIF (synchronous version for backwards compatibility)
  */
 export function addLocationToExif(
   photoBuffer: Buffer,

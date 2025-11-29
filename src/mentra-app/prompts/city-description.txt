@@ -1,0 +1,2 @@
+Give me a brief description of this city: {city}
+

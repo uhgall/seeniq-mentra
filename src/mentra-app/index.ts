@@ -20,12 +20,13 @@
 
 import { AppServer, AppSession } from "@mentra/sdk";
 import { setupButtonHandler } from "./event/button";
-import { takePhoto, addLocationToExif, sendPhotoToSeeniq } from "./modules/photo";
+import { takePhoto, addLocationToExif, addLocationToExifAsync, sendPhotoToSeeniq } from "./modules/photo";
 import { setupWebviewRoutes, broadcastTranscriptionToClients, registerSession, unregisterSession } from "./routes/routes";
 import { playAudio, speak } from "./modules/audio";
 import { setupTranscription } from "./modules/transcription";
 import * as path from "path";
-import { getLocation } from "./modules/location";
+import { getLocation, getLocationAndGeocode } from "./modules/location";
+import { getCityDescription } from "./modules/chatgpt";
 
 interface StoredPhoto {
   requestId: string;
@@ -130,6 +131,158 @@ class ExampleMentraOSApp extends AppServer {
     // Register this session for audio playback from the frontend
     registerSession(userId, session);
 
+    // Register handler for all touch events
+    session.events.onTouchEvent((event) => {
+      console.log(`wTouch event: ${event.gesture_name}`);
+    });
+
+    // Listen for button presses on the glasses - set up FIRST so it can interrupt audio
+    setupButtonHandler(session, userId, this.logger, async (s, u) => {
+      // Do NOT stop audio when button is pressed - let city description continue playing
+      // Audio will be stopped only when Seeniq response arrives
+
+      // Take photo first
+      const photoResult = await takePhoto(s, u, this.logger, this.photosMap);
+      if (!photoResult) {
+        return;
+      }
+      
+      console.log('Photo taken successfully');
+
+      // Start location fetch immediately (in parallel) - wait for it before sending to Seeniq
+      // Use cache if available (within 30 seconds)
+      const locationPromise = getLocation(s, u, this.logger, true);
+      
+      // Wait for location (required before sending to Seeniq)
+      const locationResult = await locationPromise;
+      if (!locationResult) {
+        this.logger.warn('Location not available, cannot send photo to Seeniq');
+        return;
+      }
+      
+      console.log('Location result:', locationResult);
+
+      // Add location to EXIF data (async, but we wait for it)
+      const exifResult = await addLocationToExifAsync(
+        photoResult.buffer,
+        locationResult,
+        this.logger
+      );
+
+      if (exifResult) {
+        // Update the stored photo with the new buffer containing EXIF data
+        const storedPhoto = this.photosMap.get(photoResult.requestId);
+        if (storedPhoto) {
+          storedPhoto.buffer = exifResult.buffer;
+          storedPhoto.size = exifResult.buffer.length;
+          this.photosMap.set(photoResult.requestId, storedPhoto);
+          this.logger.info(`Updated photo ${photoResult.requestId} with location EXIF data`);
+        }
+
+        // Send photo with EXIF location data to Seeniq (wait for location as required)
+        const seeniqResult = await sendPhotoToSeeniq({
+          base64Photo: exifResult.base64Data,
+          userId: userId,
+          logger: this.logger,
+        });
+
+        // When Seeniq response arrives, stop any currently playing audio (e.g., city description)
+        // Then play the Seeniq response
+        if (seeniqResult) {
+          try {
+            // Stop any currently playing audio (city description, etc.)
+            await s.audio.stopAudio();
+            this.logger.info('Stopped city description audio to play Seeniq response');
+          } catch (error) {
+            // Ignore errors if no audio is playing
+            this.logger.debug(`No audio to stop or error stopping: ${error}`);
+          }
+          
+          // Play Seeniq response
+          session.audio.speak(seeniqResult).catch((error) => {
+            this.logger.warn(`Failed to play Seeniq response: ${error}`);
+          });
+        }
+      } else {
+        this.logger.warn('Failed to add location to EXIF, but photo and location were captured');
+        // Send original photo without EXIF location data (still wait for location)
+        const seeniqResult = await sendPhotoToSeeniq({
+          base64Photo: photoResult.base64Data,
+          userId: userId,
+          logger: this.logger,
+        });
+
+        // When Seeniq response arrives, stop any currently playing audio (e.g., city description)
+        // Then play the Seeniq response
+        if (seeniqResult) {
+          try {
+            // Stop any currently playing audio (city description, etc.)
+            await s.audio.stopAudio();
+            this.logger.info('Stopped city description audio to play Seeniq response');
+          } catch (error) {
+            // Ignore errors if no audio is playing
+            this.logger.debug(`No audio to stop or error stopping: ${error}`);
+          }
+          
+          // Play Seeniq response
+          session.audio.speak(seeniqResult).catch((error) => {
+            this.logger.warn(`Failed to play Seeniq response: ${error}`);
+          });
+        }
+      }
+    });
+
+    // Get location and geocode it to city/district (non-blocking)
+    getLocationAndGeocode(session, userId, this.logger).then((result) => {
+      if (result && result.geocoded) {
+        const { city, district, neighborhood } = result.geocoded;
+        const locationText = district || neighborhood || city || '';
+        
+        // First, speak the welcome message with location immediately (non-blocking)
+        setTimeout(() => {
+          let welcomeMessage = 'Welcome to your tour';
+          if (locationText) {
+            welcomeMessage += ` in ${locationText}`;
+          }
+          
+          session.audio.speak(welcomeMessage).catch((error) => {
+            this.logger.warn(`Failed to play welcome message: ${error}`);
+          });
+        }, 1000); // Wait 1 second for session to be fully connected
+        
+        // Then, get city description from ChatGPT and speak it separately (non-blocking)
+        if (city) {
+          getCityDescription(city, this.logger).then((cityDescription) => {
+            if (cityDescription) {
+              // Speak the city description after a short delay to let the welcome message finish (non-blocking)
+              setTimeout(() => {
+                session.audio.speak(cityDescription).catch((error) => {
+                  this.logger.warn(`Failed to play city description: ${error}`);
+                });
+              }, 3000); // Wait 3 seconds to let the welcome message play first
+            }
+          }).catch((error) => {
+            this.logger.warn(`Failed to get city description: ${error}`);
+          });
+        }
+      } else {
+        // Fallback welcome message if location is not available
+        setTimeout(() => {
+          session.audio.speak('Welcome to your tour').catch((error) => {
+            this.logger.warn(`Failed to play welcome message: ${error}`);
+          });
+        }, 1000);
+      }
+    }).catch((error) => {
+      this.logger.warn(`Failed to get location for welcome message: ${error}`);
+      // Fallback welcome message if location fails
+      setTimeout(() => {
+        session.audio.speak('Welcome to your tour').catch((error) => {
+          this.logger.warn(`Failed to play welcome message: ${error}`);
+        });
+      }, 1000);
+    });
+
     // const result = await session.audio.playAudio({
     //   audioUrl: this.audioURL
     // })
@@ -154,65 +307,6 @@ class ExampleMentraOSApp extends AppServer {
     //     broadcastTranscriptionToClients(partialText, false, userId);
     //   }
     // );
-
-    // Register handler for all touch events
-    session.events.onTouchEvent((event) => {
-      console.log(`wTouch event: ${event.gesture_name}`);
-    });
-
-    // Listen for button presses on the glasses
-    setupButtonHandler(session, userId, this.logger, async (s, u) => {
-      const photoResult = await takePhoto(s, u, this.logger, this.photosMap);
-      if (photoResult) {
-        console.log('Photo taken successfully');
-      }
-
-
-      const locationResult = await getLocation(s, u, this.logger);
-      if (locationResult) {
-        console.log('Location result:', locationResult);
-      }
-
-      if (photoResult && locationResult) {
-        // Add location to EXIF data
-        const exifResult = addLocationToExif(
-          photoResult.buffer,
-          locationResult,
-          this.logger
-        );
-
-        if (exifResult) {
-          // Update the stored photo with the new buffer containing EXIF data
-          const storedPhoto = this.photosMap.get(photoResult.requestId);
-          if (storedPhoto) {
-            storedPhoto.buffer = exifResult.buffer;
-            storedPhoto.size = exifResult.buffer.length;
-            this.photosMap.set(photoResult.requestId, storedPhoto);
-            this.logger.info(`Updated photo ${photoResult.requestId} with location EXIF data`);
-          }
-
-          // Send photo with EXIF location data to Seeniq
-          const seeniqResult = await sendPhotoToSeeniq({
-            base64Photo: exifResult.base64Data,
-            userId: userId,
-            logger: this.logger,
-          });
-
-          if (seeniqResult) {
-            await session.audio.speak(seeniqResult);
-          }
-
-        } else {
-          this.logger.warn('Failed to add location to EXIF, but photo and location were captured');
-          // Send original photo without EXIF location data
-          await sendPhotoToSeeniq({
-            base64Photo: photoResult.base64Data,
-            userId: userId,
-            logger: this.logger,
-          });
-        }
-      }
-    });
   }
 
   /**
