@@ -107,3 +107,95 @@ export async function getCityDescription(
   }
 }
 
+/**
+ * Get nearby places from ChatGPT based on location
+ */
+export async function getNearbyPlaces(
+  street: string,
+  city: string,
+  country: string,
+  mentionedPlaces: string[],
+  previousResponses: string[],
+  logger: any
+): Promise<string | undefined> {
+  if (!OPENAI_API_KEY) {
+    logger.warn('OPENAI_API_KEY is not set. Skipping ChatGPT nearby places.');
+    return undefined;
+  }
+
+  if (!city || !country) {
+    logger.warn('City and country are required for nearby places query.');
+    return undefined;
+  }
+
+  try {
+    // Load the prompt template
+    const promptTemplate = loadPromptTemplate('nearby-places.txt');
+    
+    // Format mentioned places for the prompt
+    let mentionedPlacesText = 'None';
+    if (previousResponses.length > 0) {
+      // Include context from previous responses so ChatGPT can avoid mentioning the same places
+      mentionedPlacesText = `I've already told you about these places in previous responses:\n${previousResponses.map((r, i) => `${i + 1}. ${r}`).join('\n')}\n\nPlease avoid mentioning any of these places again.`;
+    } else if (mentionedPlaces.length > 0) {
+      mentionedPlacesText = mentionedPlaces.join(', ');
+    }
+    
+    logger.info(`[ChatGPT] {mentioned_places} value: ${mentionedPlacesText.substring(0, 500)}${mentionedPlacesText.length > 500 ? '...' : ''}`);
+    
+    // Fill in the template with location details and mentioned places
+    const prompt = fillPromptTemplate(promptTemplate, { 
+      street: street || 'Unknown',
+      city,
+      country,
+      mentioned_places: mentionedPlacesText
+    });
+
+    logger.info(`[ChatGPT] Requesting nearby places from ChatGPT for: ${street}, ${city}, ${country}`);
+    logger.info(`[ChatGPT] Prompt being sent: ${prompt.substring(0, 200)}...`);
+
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+        max_completion_tokens: 200,
+      }),
+    });
+
+    logger.info(`[ChatGPT] Response status: ${response.status} ${response.statusText}`);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      logger.error(`[ChatGPT] ❌ API error: ${response.status} - ${errorText}`);
+      return undefined;
+    }
+
+    const data = await response.json();
+    logger.info(`[ChatGPT] Response received: ${JSON.stringify(data, null, 2)}`);
+    
+    const description = data.choices?.[0]?.message?.content?.trim();
+
+    if (!description) {
+      logger.warn(`[ChatGPT] ❌ Returned empty nearby places description. Full response: ${JSON.stringify(data)}`);
+      return undefined;
+    }
+
+    logger.info(`[ChatGPT] ✅ Received nearby places: ${description.substring(0, 100)}...`);
+    logger.info(`[ChatGPT] Full response length: ${description.length} characters`);
+    return description;
+  } catch (error) {
+    logger.error(`Error getting nearby places from ChatGPT: ${error}`);
+    return undefined;
+  }
+}
+

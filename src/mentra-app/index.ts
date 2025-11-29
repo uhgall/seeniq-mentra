@@ -22,11 +22,11 @@ import { AppServer, AppSession } from "@mentra/sdk";
 import { setupButtonHandler } from "./event/button";
 import { takePhoto, addLocationToExif, addLocationToExifAsync, sendPhotoToSeeniq } from "./modules/photo";
 import { setupWebviewRoutes, broadcastTranscriptionToClients, registerSession, unregisterSession } from "./routes/routes";
-import { playAudio, speak } from "./modules/audio";
+import { playAudio, speak, updateLastAudioFinishTime, getLastAudioFinishTime, clearAudioFinishTime } from "./modules/audio";
 import { setupTranscription } from "./modules/transcription";
 import * as path from "path";
 import { getLocation, getLocationAndGeocode } from "./modules/location";
-import { getCityDescription } from "./modules/chatgpt";
+import { getCityDescription, getNearbyPlaces } from "./modules/chatgpt";
 
 interface StoredPhoto {
   requestId: string;
@@ -59,6 +59,10 @@ const PORT = parseInt(process.env.PORT || "3000");
 
 class ExampleMentraOSApp extends AppServer {
   private photosMap: Map<string, StoredPhoto> = new Map();
+  private idleCheckIntervals: Map<string, NodeJS.Timeout> = new Map();
+  private hasQueriedNearbyPlaces: Map<string, boolean> = new Map();
+  private mentionedPlaces: Map<string, string[]> = new Map();
+  private previousResponses: Map<string, string[]> = new Map();
 
   constructor() {
     super({
@@ -119,6 +123,220 @@ class ExampleMentraOSApp extends AppServer {
   // Session Lifecycle - Called when a user opens/closes the app
 
   /**
+   * Check if user has been idle (no audio) for 30 seconds and trigger nearby places query
+   */
+  private async checkIdleAndQueryNearbyPlaces(
+    session: AppSession,
+    userId: string
+  ): Promise<void> {
+    const lastFinishTime = getLastAudioFinishTime(userId);
+    
+    this.logger.info(`[Idle Check] Running idle check for user ${userId}`);
+    this.logger.info(`[Idle Check] Last audio start time: ${lastFinishTime ? new Date(lastFinishTime).toISOString() : 'never'}`);
+    
+    // If no audio has played yet, don't check
+    if (!lastFinishTime) {
+      this.logger.info(`[Idle Check] No audio has started yet for user ${userId}, skipping check`);
+      return;
+    }
+
+    const timeSinceLastAudio = Date.now() - lastFinishTime;
+    const IDLE_THRESHOLD_MS = 30 * 1000; // 30 seconds
+
+    this.logger.info(`[Idle Check] Time since last audio started: ${Math.round(timeSinceLastAudio / 1000)} seconds (threshold: ${IDLE_THRESHOLD_MS / 1000}s)`);
+    this.logger.info(`[Idle Check] Has queried nearby places: ${this.hasQueriedNearbyPlaces.get(userId) || false}`);
+
+    if (timeSinceLastAudio >= IDLE_THRESHOLD_MS) {
+      // Check if we've already queried for this idle period
+      if (this.hasQueriedNearbyPlaces.get(userId)) {
+        this.logger.info(`[Idle Check] Already queried nearby places for this idle period, skipping`);
+        return; // Already queried, wait for next audio to reset
+      }
+
+      this.logger.info(`[Idle Check] ✅ User ${userId} has been idle for ${Math.round(timeSinceLastAudio / 1000)} seconds. Starting nearby places query.`);
+      
+      // Mark that we're querying to prevent duplicate queries
+      this.hasQueriedNearbyPlaces.set(userId, true);
+      
+      try {
+        // Get location and geocode
+        this.logger.info(`[Nearby Places] Getting location and geocoding for user ${userId}`);
+        const locationResult = await getLocationAndGeocode(session, userId, this.logger);
+        
+        if (locationResult && locationResult.geocoded) {
+          const { city, country, formattedAddress } = locationResult.geocoded;
+          
+          this.logger.info(`[Nearby Places] Location retrieved - City: ${city}, Country: ${country}, Address: ${formattedAddress}`);
+          
+          // Extract street from formatted address or use a default
+          const street = formattedAddress?.split(',')[0] || 'Unknown';
+          
+          this.logger.info(`[Nearby Places] Extracted street: ${street}`);
+          
+          if (city && country) {
+            // Get previously mentioned places and responses for this user
+            const previouslyMentioned = this.mentionedPlaces.get(userId) || [];
+            const previousResponses = this.previousResponses.get(userId) || [];
+            this.logger.info(`[Nearby Places] Previously mentioned places: ${previouslyMentioned.length > 0 ? previouslyMentioned.join(', ') : 'None'}`);
+            this.logger.info(`[Nearby Places] Previous responses count: ${previousResponses.length}`);
+            
+            // Query ChatGPT for nearby places
+            this.logger.info(`[Nearby Places] Querying ChatGPT with: street=${street}, city=${city}, country=${country}`);
+            const nearbyPlaces = await getNearbyPlaces(
+              street,
+              city,
+              country,
+              previouslyMentioned,
+              previousResponses,
+              this.logger
+            );
+            
+            if (nearbyPlaces) {
+              this.logger.info(`[Nearby Places] ✅ Received response from ChatGPT: ${nearbyPlaces.substring(0, 100)}...`);
+              
+              // Store the full response for future reference
+              const currentResponses = this.previousResponses.get(userId) || [];
+              const updatedResponses = [...currentResponses, nearbyPlaces];
+              // Keep only the last 5 responses to avoid prompt getting too long
+              this.previousResponses.set(userId, updatedResponses.slice(-5));
+              this.logger.info(`[Nearby Places] Stored response. Total stored responses: ${updatedResponses.slice(-5).length}`);
+              
+              // Extract place names from the response and store them (for logging/debugging)
+              const extractedPlaces = this.extractPlaceNames(nearbyPlaces);
+              if (extractedPlaces.length > 0) {
+                const currentMentioned = this.mentionedPlaces.get(userId) || [];
+                const updatedMentioned = [...currentMentioned, ...extractedPlaces];
+                // Keep only unique places
+                const uniqueMentioned = Array.from(new Set(updatedMentioned));
+                this.mentionedPlaces.set(userId, uniqueMentioned);
+                this.logger.info(`[Nearby Places] Extracted ${extractedPlaces.length} place names. Total unique places: ${uniqueMentioned.length}`);
+              }
+              
+            // Play the nearby places description
+            try {
+              // Track when audio STARTS playing (before async call)
+              updateLastAudioFinishTime(userId);
+              this.logger.info(`[Nearby Places] Speaking nearby places description`);
+              this.logger.info(`[Nearby Places] Updated audio start time for user ${userId}`);
+              await session.audio.speak(nearbyPlaces);
+              this.logger.info(`[Nearby Places] ✅ Successfully spoke nearby places`);
+              // Reset the flag so we can query again after next idle period
+              this.resetNearbyPlacesFlag(userId);
+            } catch (error) {
+              this.logger.error(`[Nearby Places] ❌ Failed to speak nearby places: ${error}`);
+              // Reset flag on error so we can retry
+              this.resetNearbyPlacesFlag(userId);
+            }
+            } else {
+              this.logger.warn(`[Nearby Places] ❌ ChatGPT returned empty response`);
+              // Reset flag if query failed
+              this.resetNearbyPlacesFlag(userId);
+            }
+          } else {
+            this.logger.warn(`[Nearby Places] ❌ Cannot query nearby places: missing city (${city}) or country (${country})`);
+            // Reset flag
+            this.resetNearbyPlacesFlag(userId);
+          }
+        } else {
+          this.logger.warn(`[Nearby Places] ❌ Cannot query nearby places: location not available. Result: ${JSON.stringify(locationResult)}`);
+          // Reset flag
+          this.resetNearbyPlacesFlag(userId);
+        }
+      } catch (error) {
+        this.logger.error(`[Nearby Places] ❌ Error in nearby places query: ${error}`);
+        // Reset flag on error
+        this.resetNearbyPlacesFlag(userId);
+      }
+    } else {
+      // If audio has played recently (within 30 seconds), reset the flag
+      // This allows us to query again after the next idle period
+      if (this.hasQueriedNearbyPlaces.get(userId)) {
+        this.logger.info(`[Idle Check] Audio played recently, resetting nearby places flag`);
+        this.resetNearbyPlacesFlag(userId);
+      }
+    }
+  }
+
+  /**
+   * Reset the nearby places query flag (call when audio finishes)
+   */
+  private resetNearbyPlacesFlag(userId: string): void {
+    this.hasQueriedNearbyPlaces.set(userId, false);
+  }
+
+  /**
+   * Extract place names from ChatGPT response
+   * This is a simple heuristic - tries to identify place names from the natural language response
+   */
+  private extractPlaceNames(response: string): string[] {
+    const places: string[] = [];
+    
+    // Common patterns for place names in natural language:
+    // - "the [Place Name]" 
+    // - "[Place Name] is..."
+    // - "near [Place Name]"
+    // - "[Place Name], which..."
+    
+    // Split by common sentence separators
+    const sentences = response.split(/[.!?]\s+/);
+    
+    for (const sentence of sentences) {
+      // Look for patterns like "the [Name]", "[Name] is", "[Name],", etc.
+      // This is a heuristic and may not catch all cases, but should work reasonably well
+      const patterns = [
+        /(?:the|near|at|by)\s+([A-Z][A-Za-z\s]+?)(?:\s+(?:is|was|has|which|that|,|\.|!|\?|$))/g,
+        /([A-Z][A-Za-z\s]+?)(?:\s+(?:is|was|has|which|that|,|\.|!|\?|$))/g,
+      ];
+      
+      for (const pattern of patterns) {
+        let match;
+        while ((match = pattern.exec(sentence)) !== null) {
+          const place = match[1].trim();
+          // Filter out common words that aren't place names
+          if (place.length > 3 && 
+              !place.toLowerCase().match(/^(the|and|or|but|if|when|where|what|how|why|this|that|these|those|here|there)$/) &&
+              !places.includes(place)) {
+            places.push(place);
+          }
+        }
+      }
+    }
+    
+    // Limit to reasonable number (should be around 3 places per response)
+    return places.slice(0, 5);
+  }
+
+  /**
+   * Start periodic idle check for a user
+   */
+  private startIdleCheck(session: AppSession, userId: string): void {
+    // Clear any existing interval
+    this.stopIdleCheck(userId);
+    
+    this.logger.info(`[Idle Check] Starting idle check for user ${userId} (checking every 10 seconds, threshold: 30 seconds)`);
+    
+    // Check every 10 seconds if user has been idle for 30 seconds
+    const interval = setInterval(() => {
+      this.checkIdleAndQueryNearbyPlaces(session, userId).catch((error) => {
+        this.logger.error(`[Idle Check] Error in idle check: ${error}`);
+      });
+    }, 10000); // Check every 10 seconds
+    
+    this.idleCheckIntervals.set(userId, interval);
+  }
+
+  /**
+   * Stop periodic idle check for a user
+   */
+  private stopIdleCheck(userId: string): void {
+    const interval = this.idleCheckIntervals.get(userId);
+    if (interval) {
+      clearInterval(interval);
+      this.idleCheckIntervals.delete(userId);
+    }
+  }
+
+  /**
    * Called when a user launches the app on their glasses
    */
   protected async onSession(
@@ -130,6 +348,9 @@ class ExampleMentraOSApp extends AppServer {
 
     // Register this session for audio playback from the frontend
     registerSession(userId, session);
+    
+    // Start idle check for this user
+    this.startIdleCheck(session, userId);
 
     // Register handler for all touch events
     session.events.onTouchEvent((event) => {
@@ -199,8 +420,16 @@ class ExampleMentraOSApp extends AppServer {
           }
           
           // Play Seeniq response
-          session.audio.speak(seeniqResult).catch((error) => {
-            this.logger.warn(`Failed to play Seeniq response: ${error}`);
+          // Track when audio STARTS playing (before async call)
+          updateLastAudioFinishTime(userId);
+          this.logger.info(`[Audio] Starting Seeniq response playback for user ${userId}`);
+          this.logger.info(`[Audio] Updated audio start time for user ${userId}`);
+          session.audio.speak(seeniqResult).then(() => {
+            this.logger.info(`[Audio] ✅ Seeniq response finished playing for user ${userId}`);
+            // Reset nearby places flag so we can query again after next idle period
+            this.resetNearbyPlacesFlag(userId);
+          }).catch((error) => {
+            this.logger.warn(`[Audio] ❌ Failed to play Seeniq response: ${error}`);
           });
         }
       } else {
@@ -225,8 +454,16 @@ class ExampleMentraOSApp extends AppServer {
           }
           
           // Play Seeniq response
-          session.audio.speak(seeniqResult).catch((error) => {
-            this.logger.warn(`Failed to play Seeniq response: ${error}`);
+          // Track when audio STARTS playing (before async call)
+          updateLastAudioFinishTime(userId);
+          this.logger.info(`[Audio] Starting Seeniq response playback for user ${userId}`);
+          this.logger.info(`[Audio] Updated audio start time for user ${userId}`);
+          session.audio.speak(seeniqResult).then(() => {
+            this.logger.info(`[Audio] ✅ Seeniq response finished playing for user ${userId}`);
+            // Reset nearby places flag so we can query again after next idle period
+            this.resetNearbyPlacesFlag(userId);
+          }).catch((error) => {
+            this.logger.warn(`[Audio] ❌ Failed to play Seeniq response: ${error}`);
           });
         }
       }
@@ -245,8 +482,16 @@ class ExampleMentraOSApp extends AppServer {
             welcomeMessage += ` in ${locationText}`;
           }
           
-          session.audio.speak(welcomeMessage).catch((error) => {
-            this.logger.warn(`Failed to play welcome message: ${error}`);
+          // Track when audio STARTS playing (before async call)
+          updateLastAudioFinishTime(userId);
+          this.logger.info(`[Audio] Starting welcome message playback for user ${userId}`);
+          this.logger.info(`[Audio] Updated audio start time for user ${userId}`);
+          session.audio.speak(welcomeMessage).then(() => {
+            this.logger.info(`[Audio] ✅ Welcome message finished playing for user ${userId}`);
+            // Reset nearby places flag so we can query again after next idle period
+            this.resetNearbyPlacesFlag(userId);
+          }).catch((error) => {
+            this.logger.warn(`[Audio] ❌ Failed to play welcome message: ${error}`);
           });
         }, 1000); // Wait 1 second for session to be fully connected
         
@@ -256,8 +501,16 @@ class ExampleMentraOSApp extends AppServer {
             if (cityDescription) {
               // Speak the city description after a short delay to let the welcome message finish (non-blocking)
               setTimeout(() => {
-                session.audio.speak(cityDescription).catch((error) => {
-                  this.logger.warn(`Failed to play city description: ${error}`);
+                // Track when audio STARTS playing (before async call)
+                updateLastAudioFinishTime(userId);
+                this.logger.info(`[Audio] Starting city description playback for user ${userId}`);
+                this.logger.info(`[Audio] Updated audio start time for user ${userId}`);
+                session.audio.speak(cityDescription).then(() => {
+                  this.logger.info(`[Audio] ✅ City description finished playing for user ${userId}`);
+                  // Reset nearby places flag so we can query again after next idle period
+                  this.resetNearbyPlacesFlag(userId);
+                }).catch((error) => {
+                  this.logger.warn(`[Audio] ❌ Failed to play city description: ${error}`);
                 });
               }, 3000); // Wait 3 seconds to let the welcome message play first
             }
@@ -268,8 +521,16 @@ class ExampleMentraOSApp extends AppServer {
       } else {
         // Fallback welcome message if location is not available
         setTimeout(() => {
-          session.audio.speak('Welcome to your tour').catch((error) => {
-            this.logger.warn(`Failed to play welcome message: ${error}`);
+          // Track when audio STARTS playing (before async call)
+          updateLastAudioFinishTime(userId);
+          this.logger.info(`[Audio] Starting fallback welcome message playback for user ${userId}`);
+          this.logger.info(`[Audio] Updated audio start time for user ${userId}`);
+          session.audio.speak('Welcome to your tour').then(() => {
+            this.logger.info(`[Audio] ✅ Fallback welcome message finished playing for user ${userId}`);
+            // Reset nearby places flag so we can query again after next idle period
+            this.resetNearbyPlacesFlag(userId);
+          }).catch((error) => {
+            this.logger.warn(`[Audio] ❌ Failed to play fallback welcome message: ${error}`);
           });
         }, 1000);
       }
@@ -283,30 +544,6 @@ class ExampleMentraOSApp extends AppServer {
       }, 1000);
     });
 
-    // const result = await session.audio.playAudio({
-    //   audioUrl: this.audioURL
-    // })
-    // // await session.audio.speak('Hello from your app!');
-
-    // Set up transcription to log all speech-to-text
-    // setupTranscription(
-    //   session,
-    //   (finalText) => {
-    //     // Called when transcription is finalized
-    //     this.logger.info(`[FINAL] Transcription for user ${userId}: ${finalText}`);
-    //     console.log(`✅ Final transcription (user ${userId}): ${finalText}`);
-
-    //     // Broadcast final transcription to this user's SSE clients only
-    //     broadcastTranscriptionToClients(finalText, true, userId);
-    //   },
-    //   (partialText) => {
-    //     // Called for interim/partial results (optional)
-    //     console.log(`⏳ Partial transcription (user ${userId}): ${partialText}`);
-
-    //     // Broadcast partial transcription to this user's SSE clients only
-    //     broadcastTranscriptionToClients(partialText, false, userId);
-    //   }
-    // );
   }
 
   /**
@@ -318,6 +555,19 @@ class ExampleMentraOSApp extends AppServer {
     reason: string
   ): Promise<void> {
     this.logger.info(`Session stopped for user ${userId}, reason: ${reason}`);
+
+    // Stop idle check for this user
+    this.stopIdleCheck(userId);
+    
+    // Clear audio finish time tracking
+    clearAudioFinishTime(userId);
+    
+    // Clear nearby places query flag
+    this.hasQueriedNearbyPlaces.delete(userId);
+    
+    // Clear mentioned places and responses for this user (optional - you might want to persist across sessions)
+    // this.mentionedPlaces.delete(userId);
+    // this.previousResponses.delete(userId);
 
     // Unregister the session
     unregisterSession(userId);

@@ -1,2 +1,3 @@
 Give me a brief description of this city: {city}
+It should be no longer the 30 words
 
